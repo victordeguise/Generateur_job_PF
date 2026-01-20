@@ -1,0 +1,1 @@
+pyinstaller --collect-all git --onefile generateur.py

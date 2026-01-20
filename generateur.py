@@ -4,30 +4,68 @@ import difflib
 from datetime import datetime
 import subprocess
 import sys
+import logging
+import json
 
-# Colorama pour le menu interactif
-try:
-    from colorama import init, Fore, Style
-except ImportError:
-    print("Installation du package 'colorama'...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "colorama"])
-    from colorama import init, Fore, Style
+# --- CONFIGURATION DU LOGGING ---
+# Le script va écrire dans 'generateur_debug.log' et afficher dans la console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("generateur_debug.log", encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# Fichier de config pour mémoriser le chemin Git
+CONFIG_FILE = "config_generateur.json"
+
+def get_saved_git_path():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f).get("git_path")
+    return None
+
+def save_git_path(path):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump({"git_path": path}, f)
+
+# --- GESTION DES DEPENDANCES ---
+def install_and_import(package, import_name=None):
+    if import_name is None:
+        import_name = package
+    try:
+        return __import__(import_name)
+    except ImportError:
+        logging.info(f"Installation du package manquant : {package}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        return __import__(import_name)
+
+git = install_and_import("gitpython", "git")
+chardet = install_and_import("chardet")
+pathlib = install_and_import("pathlib")
+questionary = install_and_import("questionary")
+rich = install_and_import("rich")
+
+import rich 
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich import box
+
+console = Console()
+import questionary
+import chardet
+from pathlib import Path
+from git import Repo
+
+# --- CONFIGURATION DU CHEMIN RACINE (Compatible .EXE) ---
+if getattr(sys, 'frozen', False):
+    script_path = Path(sys.executable).parent.absolute()
+else:
+    script_path = Path(__file__).parent.absolute()
     
-init(autoreset=True)  # réinitialise automatiquement les couleurs
-
-try:
-    from git import Repo
-except ImportError:
-    print("Installation du package 'gitpython'...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "gitpython"])
-    from git import Repo
-try:
-    import chardet
-except ImportError:
-    print("Installation du package 'chardet'...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "chardet"])
-    import chardet
-
 def afficher_cadre(titre, lignes):
     largeur = max(len(ligne) for ligne in lignes + [titre]) + 4
     print("+" + "-" * largeur + "+")
@@ -47,7 +85,7 @@ def is_valid_git_path(path):
         return True
     except Exception:
         # Si une exception est levée, le chemin n'est pas un dépôt Git valide
-        print("Chemin du dépôt Git introuvable ou invalide.")
+        logging.info("Chemin du dépôt Git introuvable ou invalide.")
         return False
 
 def get_git_path():
@@ -75,13 +113,13 @@ def get_git_path():
 def get_git_branch(local_repo_path):
     repo = Repo(local_repo_path)
     branch_name = repo.active_branch.name
-    print(f"Branche git active: {branch_name}")
+    console.print(f"Branche git active: [bold green]{branch_name}[/bold green]")
     return branch_name
 
 def get_modified_files(local_repo_path, develop_branch):
     repo = Repo(local_repo_path)
     modified_files = repo.git.diff('master', develop_branch, name_only=True).split('\n')
-    print(f"Fichiers modifiés: {modified_files}")
+    console.print(f"Fichiers modifiés: [bold white]{modified_files}[/bold white]")
     return modified_files
 
 # ===================== Fonctions de génération de job =====================
@@ -102,14 +140,14 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
         with open(fic1_in, 'r', encoding='utf-8') as f_in:
             pass  # Just to check if it exists
     except FileNotFoundError:
-        print(f"Impossibilité d'ouvrir le fichier en entrée : <{fic1_in}> !")
+        logging.info(f"Impossibilité d'ouvrir le fichier en entrée : <{fic1_in}> !")
 
     # Ouverture du fichier de sortie en écriture
     try:
         with open(fic1_out, 'w', encoding='utf-8') as f_out:
             pass  # Just to check if it can be created
     except IOError:
-        print(f"Impossibilité de créer le fichier en sortie : <{fic1_out}> !")
+        logging.info(f"Impossibilité de créer le fichier en sortie : <{fic1_out}> !")
 
     # Initialisation variable
     phase = 10
@@ -212,11 +250,11 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     
                     
             # La ligne lue est une commande FM
-            elif line[:9] == "%FM_PROG%":
-                if line[10:17] == "dbcheck" or line[10:16] == "dchain" or line[10:18] == "keybuild" or line[10:17] == "pexport":
+            elif "%FM_PROG%" in line:
+                if any(cmd in line for cmd in ["dbcheck","dchain","keybuild","pexport"]):
                     PHASE_prec = phase - 10
                     # pas de redirection de la sortie standard des pexports
-                    if line[10:17] == "pexport":
+                    if "pexport" in line:
                         f_out.write(f"{line}\n")
                     else:
                         f_out.write(f"{line} >> %JOURNAL% 2>&1 \n")
@@ -230,7 +268,7 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     PHASE_prec_1 = PHASE_prec
                     
                 # La ligne lue est un pimport
-                elif line[10:17] == "pimport":
+                elif "pimport" in line:
                     PHASE_prec = phase - 10
                     f_out.write(f"{line}\n")
                     if ',' not in line:
@@ -249,10 +287,10 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     else:
                         f_out.write(f"{ligne_err_1}\n")
                     
-            elif line[:7] == "%PF_EXE":
+            elif "%PF_EXE" in line:
                 PHASE_prec = phase - 10
                 # Paramètre de relance automatique de chaîne
-                if line[9:13] == "join" or line[12:16] == "join":
+                if "join" in line:
                     f_out.write(f"{line} 2>> %JOURNAL%\n")
                     f_out.write(f"if %errorlevel% EQU 0 goto finSTEP{PHASE_prec}\n")
                     f_out.write(f"if %errorlevel% NEQ 0 set ERR=Erreur execution %NOMTRAIT% & set /a nberr = %nberr%+1\n")
@@ -260,7 +298,7 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     f_out.write("if %nberr% GTR 1 goto ERREUR\n")
                     f_out.write(f":finSTEP{PHASE_prec}\n\n")
                     
-                elif line[9:13] == "grep" or line[12:16] == "grep":
+                elif "grep" in line:
                     f_out.write(f"{line} 2>> %JOURNAL%\n")
                     f_out.write(f"if %errorlevel% LSS 2 goto finSTEP{PHASE_prec}\n")
                     f_out.write(f"if %errorlevel% GTR 1 set ERR=Erreur execution %NOMTRAIT% & set /a nberr = %nberr%+1\n")
@@ -268,7 +306,7 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     f_out.write("if %nberr% GTR 1 goto ERREUR\n")
                     f_out.write(f":finSTEP{PHASE_prec}\n\n")
                     
-                elif line[9:24] == "fmfileconverter" or line[12:27] == "fmfileconverter" or line[9:19] == "fmfilesort" or line[12:22] == "fmfilesort":
+                elif any(cmd in line for cmd in ["fmfileconverter","fmfilesort"]):
                     f_out.write(f"{line} 2>> %JOURNAL%\n")
                     f_out.write(f"if %errorlevel% EQU 0 goto finSTEP{PHASE_prec}\n")
                     f_out.write(f"if %errorlevel% NEQ 0 set ERR=Erreur execution %NOMTRAIT% & set /a nberr = %nberr%+1\n")
@@ -276,7 +314,7 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     f_out.write("if %nberr% GTR 1 goto ERREUR\n")
                     f_out.write(f":finSTEP{PHASE_prec}\n\n")
                     
-                elif line[9:12] == "cat" or line[12:15] == "cat":
+                elif "cat" in line:
                     f_out.write(f"{line} 2>> %JOURNAL%\n")
                     f_out.write(f"if %errorlevel% EQU 0 goto finSTEP{PHASE_prec}\n")
                     f_out.write(f"if %errorlevel% NEQ 0 set ERR=Erreur execution %NOMTRAIT% & set /a nberr = %nberr%+1\n")
@@ -285,12 +323,12 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     f_out.write(f":finSTEP{PHASE_prec}\n\n")
 
                 # uniq : mettre une ligne d'erreur et relance automatique pour chaque ligne
-                elif line[12:16] == "uniq":
+                elif "uniq" in line:
                     f_out.write(f"{line} 2>> %JOURNAL%\n")
 
                     # Mettre une phase intermédiaire entre les deux lignes de uniq
                     next_line, end_of_file = lire_fice1(f_in)
-                    if next_line[12:16] == "uniq":
+                    if "uniq" in next_line:
                         # Phase intermédiaire
                         PHASE_p = phase - 5
                         
@@ -314,7 +352,7 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
 
                 else:
                     f_out.write(f"{line} 2>> %JOURNAL%\n")
-                    if line[12:20] == "unix2dos" or line[12:17] == "touch":
+                    if "unix2dos" in line or "touch" in line:
                         f_out.write(f"{ligne_err_1}")
                     else:
                         f_out.write(f"if %errorlevel% EQU 0 goto finSTEP{PHASE_prec}\n")
@@ -323,10 +361,10 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                         f_out.write("if %nberr% GTR 1 goto ERREUR\n")
                         f_out.write(f":finSTEP{PHASE_prec}\n\n")
                         
-            elif line[:8] == "forfiles":
+            elif "forfiles" in line:
                 f_out.write(f"{line} >> %JOURNAL% 2>&1\n\n")
             # Gestion des boucles FOR
-            elif line[:3].lower() == "for":
+            elif "for" in line:
                 f_out.write(f"{line}\n")
                 count1 = line.count('(')
                 count2 = line.count(')')
@@ -342,31 +380,28 @@ def generateur_job(fic1_in,fic1_out,date_jour,phase_depart,username):
                     f_out.write(f"{line}\n")
 
             # Gestion des IF
-            elif (line[:2] == "if" or line[0] == ":" or line[0] == ")" or
-                  line[:4] == "goto" or line[:3] == "set" or line[:4] == "type" or
-                  line[:5] == "mkdir" or line[:5] == "rmdir" or line[:4] == "echo" or
-                  line[:4] == "find" or line[:4] == "ping" or line[:3] == "dir"):
+            elif any(cmd in line for cmd in ["if",":","goto","set","type","mkdir","rmdir","echo","find","ping","dir"]):
                 f_out.write(f"{line}\n")
 
             # Gestion des CALL
-            elif line[:4] == "call" or "Program Files" in line[4:17]:
+            elif "call" in line or "Program Files" in line:
                 f_out.write(f"{line}\n")
                 f_out.write(f"{ligne_err_1}\n")
 
             # Gestion des mouvements de fichiers MOVE/COPY/DEL
-            elif line[:4] == "move" or line[:4] == "copy":
+            elif "move" in line or "copy" in line:
                 mvt_type = line[:4]
                 f_out.write(f"{ligne_copy_1}\n{ligne_copy_2} {mvt_type}\n")
                 f_out.write(f"echo Source :  {line.split()[1]} >> %JOURNAL% 2>&1\necho Cible :   {line.split()[2]} >> %JOURNAL% 2>&1\n")
                 f_out.write(f"{ligne_copy_1}\n\n")
                 f_out.write(f"{line} >> %JOURNAL% 2>&1\n\n")
 
-            elif line[:3] == "del":
+            elif "del" in line:
                 f_out.write(f"{line} >> %JOURNAL% 2>&1\n")
 
-            elif line[:6] == "%PERL%":
+            elif "%PERL%" in line:
                 f_out.write(f"{line} >> %JOURNAL% 2>&1\n")
-                if line[25:33] == "sendmail":
+                if "sendmail" in line:
                     PHASE_prec = phase - 10
                     f_out.write(f"if %errorlevel% EQU 0 goto finSTEP{PHASE_prec}\n")
                     f_out.write(f"if %errorlevel% NEQ 0 set ERR=Erreur execution %NOMTRAIT% & set /a nberr = %nberr%+1\n")
@@ -425,19 +460,13 @@ def compare_files_to_html(file1_path, file2_path, encoding1, encoding2, nom_job,
 
 def transfer_files(server, nom_chaine, local_repo_path, files, develop_branch, transfert):
     """ Fonction pour transférer les fichiers sur le serveur et older l'ancien """
-    print("#####################################")
-    # Obtenir le chemin du script
-    script_path = os.path.abspath(sys.executable)
-    # Obtenir le dossier parent du script
-    current_path = os.path.dirname(script_path)
-    FM_path = os.path.join(current_path, f"{nom_chaine}_{develop_branch}")
-    if not os.path.exists(FM_path):
-        os.mkdir(FM_path)
+    console.print("[bold purple]#####################################[/bold purple]")
+    FM_path = Path(script_path, f"{nom_chaine}_{develop_branch}")
+    FM_path.mkdir(exist_ok=True)
     date_today = datetime.now().strftime('%d/%m/%Y')
     year = datetime.now().strftime('%Y')
     month = datetime.now().strftime('%m')
     day = datetime.now().strftime('%d')
-
     for file in files:
         file = file.replace("/", "\\")
         nom_job = os.path.basename(file)
@@ -445,162 +474,149 @@ def transfer_files(server, nom_chaine, local_repo_path, files, develop_branch, t
         
         # Vérifier l'extension du fichier
         if not (file.endswith('.bat') or file.endswith('.cmd')) or 'init_var' in file or '_appli' in file:
-            print(f"Le fichier {nom_job} n'a pas besoin d'être généré.")
+            console.print(f"Le fichier [bold white]{nom_job}[/bold white] n'a pas besoin d'être généré.")
             shutil.copy(path_script, FM_path)
         else:
-            print(f"Génération du job: {nom_job}")
+            console.print(f"Génération du job: [bold white]{nom_job}[/bold white]")
             file = f"job\\{nom_job}"
             generateur_job(path_script, os.path.join(FM_path, nom_job), date_today, 0, os.getenv('USERNAME'))
 
         if transfert :
-            print(f"Transfert de {nom_job}...")
-            source_path = f'\\\\{server}\\prod\\{nom_chaine}\\{file}'
-            dest_path = f'\\\\{server}\\prod\\{nom_chaine}\\{file}.{year}{month}{day}'
+            console.print(f"Transfert de [bold white]{nom_job}[/bold white]...")
+            source_path = Path(f"//{server}/prod/{nom_chaine}/{file}")
+            dest_path = Path(f"//{server}/prod/{nom_chaine}/{file}.{year}{month}{day}")
             print(f"Horodatage de {source_path} en {dest_path}")
             try:
                 shutil.move(source_path, dest_path)
                 print("Fichier déplacé avec succès.")
             except Exception as e:
-                print("Une erreur s'est produite :", e)
+                console.print(f"[bold red]❌ ERREUR :[/bold red] {str(e)}")
             print(f"Copie de {os.path.join(FM_path, nom_job)} vers {source_path}")
             try:
                 shutil.copy(os.path.join(FM_path, nom_job), source_path)
                 print("Fichier déplacé avec succès.")
             except Exception as e:
-                print("Une erreur s'est produite :", e)
-        
+                console.print(f"[bold red]❌ ERREUR :[/bold red] {str(e)}")
+            console.print("[bold purple]########### Fin du transfert ##################[/bold purple]")
+            
             encoding1 = detect_encoding(dest_path)
             encoding2 = detect_encoding(source_path)
 
             compare_files_to_html(dest_path, source_path, encoding1, encoding2, nom_job, FM_path)
-        
-            subprocess.run(['start', '', 'notepad++.exe', dest_path], shell=True)
-            subprocess.run(['start', '', 'notepad++.exe', source_path], shell=True)
-        
-        print("#####################################")
+            console.print(f"[bold purple]########### Comparaison HTML généré dans {FM_path} ##################[/bold purple]")
+    if not transfert:
+        console.print("[bold purple]########### Fin de la génération des fichiers sans transfert ##################[/bold purple]")
 
+def validation_job(text):
+    # 1. Vérification de l'extension
+    if not text.lower().endswith(('.bat', '.cmd')):
+        return "Le job doit finir par .bat ou .cmd"
+    
+    # 2. Vérification des caractères interdits (Windows)
+    if any(char in text for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
+        return "Le nom contient des caractères interdits"
+    
+    return True
+ 
 # ===================== Menu =====================
 
 def main():
+    console.print(Panel.fit(
+        "[bold cyan]GÉNÉRATEUR DE JOBS AUTOMATISÉ[/bold cyan]\n[italic white]Optimisation & Déploiement FM[/italic white]",
+        border_style="bright_blue",
+        box=box.DOUBLE_EDGE
+    ))
+    
     applis_valides = ["fm1", "fm2", "fm3", "fm4", "fm5", "fm6", "fm7", "fm8", "fm9", "fm", "fm0"]
 
     while True:
-        lignes_menu = [
-            "1 - Générer le job automatiquement (auto)",
-            "2 - Générer le job manuellement (manuel)",
-            "3 - Comparer 2 jobs recette vs prod",
-            "4 - Quitter"
-        ]
-        afficher_cadre("MENU PRINCIPAL", lignes_menu)
-        choix = input(Fore.GREEN + "Sélectionnez une option (1/2/3/4) : ").strip()
+        # menu interactif
+        choix = questionary.select(
+            "--- MENU PRINCIPAL ---",
+            choices=[
+                questionary.Choice(title="1 - Générer le job automatiquement (auto)", value="auto"),
+                questionary.Choice(title="2 - Générer le job manuellement (manuel)", value="manuel"),
+                questionary.Choice(title="3 - Comparer 2 jobs (recette vs prod)", value="comparaison"),
+                questionary.Choice(title="4 - Quitter", value="quitter")
+            ]
+        ).ask()
+        if choix == "quitter":
+            break
+            
+        if choix == "auto":
+            # Choix de l'application
+            nom_chaine = questionary.select(
+                "Quelle est l'application ?",
+                choices=applis_valides,
+                ).ask()
 
-        if choix == "1":
-            # Menu interactif appli
-            afficher_cadre("CHOIX DE L'APPLICATION", [f"{i+1} - {appli.upper()}" for i, appli in enumerate(applis_valides)])
-            while True:
-                try:
-                    sel_appli = int(input(Fore.GREEN + "Numéro de l'application : "))
-                    if 1 <= sel_appli <= len(applis_valides):
-                        nom_chaine = applis_valides[sel_appli - 1]
-                        break
-                    else:
-                        print(Fore.RED + "Numéro invalide.")
-                except ValueError:
-                    print(Fore.RED + "Entrez un nombre valide.")
-
-            # Menu interactif serveur
-            print(nom_chaine)
+            # Choix du serveur
             if nom_chaine == "fm4":
-                serveurs_valides = {
-                    "recette fm4": "pfadc6fm4app01r",
-                    "prod fm4" : "pfadc2fm4app01p"
-                }
+                serveurs = {"recette fm4": "pfadc6fm4app01r", "prod fm4": "pfadc2fm4app01p"}
             else:
-                serveurs_valides = {
-                "recette": "pfovhvrfmxapp01",
-                "prod": "pfovhvpfmxapp01",
-                }
-            serveurs_list = list(serveurs_valides.keys())
-            afficher_cadre("CHOIX DU SERVEUR", [f"{i+1} - {serv}" for i, serv in enumerate(serveurs_list)])
-            while True:
-                try:
-                    sel_serv = int(input(Fore.GREEN + "Numéro du serveur : "))
-                    if 1 <= sel_serv <= len(serveurs_list):
-                        server = serveurs_valides[serveurs_list[sel_serv - 1]]
-                        break
-                    else:
-                        print(Fore.RED + "Numéro invalide.")
-                except ValueError:
-                    print(Fore.RED + "Entrez un nombre valide.")
+                serveurs = {"recette": "pfovhvrfmxapp01", "prod": "pfovhvpfmxapp01"}
+            
+            serv_label = questionary.select("Sur quel serveur déployer ?", choices=list(serveurs.keys())).ask()
+            server = serveurs[serv_label]
 
-            # Appel fonctions existantes (à adapter)
-            path_git = get_git_path()
-            if not path_git:
-                print(Fore.RED + "Erreur: Chemin Git introuvable.")
-                input("Assurez vous d'avoir git d'installé sur votre PC")
-                return
+            # Gestion du chemin Git
+            path_git = get_saved_git_path()
+            if not path_git or not is_valid_git_path(path_git):
+                path_git = get_git_path()
+                if path_git:
+                    save_git_path(path_git)
 
             local_repo_path = os.path.join(path_git, nom_chaine)
-            print(Fore.BLUE + f"Chemin du dépôt local: {local_repo_path}")
             develop_branch = get_git_branch(local_repo_path)
             files = get_modified_files(local_repo_path, develop_branch)
-            transfert_input = input(Fore.YELLOW + "Voulez-vous effectuer le transfert des fichiers ? (o/n) ").lower()
-            if transfert_input == 'o':
-                transfert = True
-            else:
-                transfert = False
-            transfer_files(server, nom_chaine, local_repo_path, files, develop_branch, transfert)
-            input(Fore.GREEN + "Déploiement terminé avec succès !")
-            return
 
-        elif choix == "2":
-            nom_job = input(Fore.GREEN + "Quel est le nom du job .bat ? ").lower()
-            try:
-                path_git
-            except NameError:
+            if not files or files == ['']:
+                console.print("[bold yellow]⚠ Aucun fichier modifié n'a été trouvé dans le dépôt.[/bold yellow]")
+                continue
+
+            # Confirmation du transfert
+            transfert = questionary.confirm("Voulez-vous effectuer le transfert des fichiers ?").ask()
+            
+            transfer_files(server, nom_chaine, local_repo_path, files, develop_branch, transfert)
+            break
+
+        elif choix == "manuel":
+            nom_job = questionary.text("Nom du job .bat (ex: jfm1aa10.bat) :", validate=validation_job).ask().lower()
+            path_git = get_saved_git_path()
+            if not path_git or not is_valid_git_path(path_git):
                 path_git = get_git_path()
-            script_path = os.path.abspath(sys.executable)
-            current_path = os.path.dirname(script_path)
+                if path_git:
+                    save_git_path(path_git)
             date_today = datetime.now().strftime('%d/%m/%Y')
             username = os.getenv('USERNAME')
             FM = nom_job[1:4]
             SG = nom_job[0:6]
             local_repo_path = os.path.join(path_git, FM)
             develop_branch = get_git_branch(local_repo_path)
-            FM_path = os.path.join(current_path, f"{FM}_{develop_branch}")
-            if not os.path.exists(FM_path):
-                os.mkdir(FM_path)
-            generateur_job(f"{path_git}\\{FM}\\JOB\\{SG}\\{nom_job}", os.path.join(FM_path, nom_job), date_today, 0, username)
-            input(Fore.GREEN + f"Fichier {nom_job} généré")
+            FM_path = Path(script_path, f"{FM}_{develop_branch}")
+            FM_path.mkdir(exist_ok=True)
+            generateur_job(os.path.join(path_git, FM, "JOB", SG, nom_job), os.path.join(FM_path, nom_job), date_today, 0, username)
+            console.print(f"Fichier [bold green]{nom_job}[/bold green] généré")
 
-        elif choix == "3":
-            nom_job = input(Fore.GREEN + "Quel est le nom du job .bat ? ").lower()
+        elif choix == "comparaison":
+            nom_job = questionary.text("Nom du job .bat (ex: jfm1aa10.bat) :", validate=validation_job).ask().lower()
             FM = nom_job[1:4]
-            script_path = os.path.abspath(sys.executable)
-            current_path = os.path.dirname(script_path)
-            FM_path = os.path.join(current_path, f"{FM}_comparaison")
-            if not os.path.exists(FM_path):
-                os.mkdir(FM_path)
-            if FM == "FM4":
-                server_R7 = "pfadc6fm4app01r"
-                serveur_prod = "pfadc2fm4app01p"
-            else:
-                server_R7 = "pfovhvrfmxapp01"
-                serveur_prod = "pfovhvpfmxapp01"
-                
-            source_path = f'\\\\{server_R7}\\prod\\{FM}\\job\\{nom_job}'
-            dest_path = f'\\\\{serveur_prod}\\prod\\{FM}\\job\\{nom_job}'
+            FM_path = Path(script_path, f"{FM}_comparaison")
+            FM_path.mkdir(exist_ok=True)
+            server_R7 = "pfadc6fm4app01r" if FM.upper() == "FM4" else "pfovhvrfmxapp01"
+            serveur_prod = "pfadc2fm4app01p" if FM.upper() == "FM4" else "pfovhvpfmxapp01"
+            source_path = Path(f"//{server_R7}/prod/{FM}/job/{nom_job}")
+            dest_path = Path(f"//{serveur_prod}/prod/{FM}/job/{nom_job}")
             encoding1 = detect_encoding(dest_path)
             encoding2 = detect_encoding(source_path)
             compare_files_to_html(dest_path, source_path, encoding1, encoding2, nom_job, FM_path)
-            input("Fichier de comparaison généré")
+            console.print("[green]Fichier de comparaison généré[/green]")
             
-        elif choix == "4":
-            print(Fore.CYAN + "Sortie du programme.")
-            return
-
-        else:
-            print(Fore.RED + "Option invalide. Veuillez réessayer.")
-
+    console.print(Panel.fit(
+    "[bold cyan]Merci d'avoir utilisé le Générateur de Jobs ![/bold cyan]\n",
+    border_style="cyan"
+    ))
+    questionary.press_any_key_to_continue("Appuyez sur une touche pour quitter...").ask()
+            
 if __name__ == "__main__":
     main()
