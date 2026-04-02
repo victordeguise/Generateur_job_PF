@@ -253,8 +253,8 @@ class TransferResult:
     fichier: str
     succes: bool
     message: str
-    dossier_destination: str = ""  # NOUVEAU: job, script ou param
-    chemin_serveur: str = ""       # NOUVEAU: chemin complet sur le serveur
+    dossier_destination: str = ""
+    chemin_serveur: str = ""
     horodatage_ancien: str = ""
     checksum_avant: str = ""
     checksum_apres: str = ""
@@ -882,7 +882,7 @@ class JobGenerator:
                     f_out.write(f"{inner}\n")
                     break
                 if not inner[:3].lower() == "rem":
-                    f_out.write(f"{inner} 2>> %JOURNAL%\n{self.LIGNE_ERR_2}\n")
+                    f_out.write(f"{inner}\n{self.LIGNE_ERR_2}\n")
                 else:
                     f_out.write(f"{inner}\n")
 
@@ -946,8 +946,8 @@ class JobGenerator:
                 line, eof = self.lire_ligne(f_in)
                 if eof:
                     return False
-                self.job_name = line
-                self.nom_job2 = self.job_name.split('.')[0]
+                self.job_name = config.nom_job
+                self.nom_job2 = self.job_name.split('.')[0] 
 
                 line, eof = self.lire_ligne(f_in)
                 auteur = line if not eof else "UNKNOWN"
@@ -972,48 +972,10 @@ class JobGenerator:
             self._afficher_stats(config)
             return True
 
-        except UnicodeDecodeError:
-            encoding = detect_encoding(config.input_path)
-            logger.info(f"Tentative avec encodage {encoding}")
-            try:
-                return self._generer_avec_encodage(config, encoding)
-            except Exception as e2:
-                logger.error(f"Échec: {e2}")
-                return False
         except Exception as e:
             logger.error(f"Erreur génération: {e}")
             return False
 
-    def _generer_avec_encodage(self, config: JobConfig, encoding: str) -> bool:
-        with (
-            open(config.input_path, 'r', encoding=encoding) as f_in,
-            open(config.output_path, 'w', encoding='utf-8') as f_out
-        ):
-            line, eof = self.lire_ligne(f_in)
-            if eof:
-                return False
-            self.job_name = line
-            self.nom_job2 = self.job_name.split('.')[0]
-            line, eof = self.lire_ligne(f_in)
-            auteur = line if not eof else "UNKNOWN"
-            line, eof = self.lire_ligne(f_in)
-            lib_job = line if not eof else ""
-            line, eof = self.lire_ligne(f_in)
-            desc_job = line if not eof else ""
-
-            self._write_entete(f_out, self.nom_job2, config.date_jour,
-                               auteur, lib_job, desc_job, config.username)
-            if ".cmd" not in self.job_name:
-                self._write_initialisation(f_out, self.nom_job2)
-            while True:
-                line, eof = self.lire_ligne(f_in)
-                if eof:
-                    break
-                self._traiter_ligne(f_out, line, f_in)
-            self._write_fin_job(f_out)
-
-        self._afficher_stats(config)
-        return True
 
     def _afficher_stats(self, config: JobConfig):
         table = Table(
@@ -1176,10 +1138,10 @@ class FileTransferManager:
         sous_dossier = extraire_sous_dossier(file_normalized, nom_job)
 
         console.print(
-            f"\n📂 [bold white]{nom_job}[/bold white] → "
-            f"Dossier: [bold magenta]{dossier_dest.upper()}[/bold magenta]"
-            + (f" / {sous_dossier}" if sous_dossier else "")
-        )
+        f"\n📂 [bold white]{nom_job}[/bold white] → "
+        f"Dossier serveur: [bold magenta]{dossier_dest.upper()}[/bold magenta]"
+        + (f" (Git: {sous_dossier})" if sous_dossier else "")
+    )
 
         # ──── Déterminer si le fichier doit être généré ────
         needs_generation = (
@@ -1191,7 +1153,8 @@ class FileTransferManager:
         path_script = os.path.join(local_repo_path, file_windows)
 
         if not needs_generation:
-            console.print(f"  📋 Copie simple (pas de génération)")
+            # ──── COPIE SIMPLE (param, ou extension inconnue) ────
+            console.print(f"  📋 Copie simple (fichier {dossier_dest.upper()}, pas de génération)")
             try:
                 shutil.copy(path_script, FM_path)
                 self.history.ajouter("copie", {
@@ -1199,13 +1162,10 @@ class FileTransferManager:
                     "dossier_destination": dossier_dest,
                     "resultat": "succès"
                 })
-                return TransferResult(
-                    nom_job, True, "Copié sans génération",
-                    dossier_destination=dossier_dest
-                )
             except Exception as e:
-                return TransferResult(nom_job, False, f"Erreur copie: {e}")
+                return TransferResult(nom_job, False, f"Erreur copie locale: {e}")
         else:
+            # ──── GÉNÉRATION (job / script) ────
             console.print(f"  ⚙️  Génération du job...")
             config = JobConfig(
                 nom_job=nom_job, input_path=path_script,
@@ -1222,7 +1182,7 @@ class FileTransferManager:
                 "resultat": "succès"
             })
 
-        # ──── TRANSFERT avec chemin correct ────
+        # ──── TRANSFERT SERVEUR (pour TOUS les fichiers) ────
         if transfert:
             return self._effectuer_transfert(
                 nom_job=nom_job,
@@ -1235,7 +1195,8 @@ class FileTransferManager:
             )
 
         return TransferResult(
-            nom_job, True, "Généré sans transfert",
+            nom_job, True,
+            f"{'Copié' if not needs_generation else 'Généré'} sans transfert",
             dossier_destination=dossier_dest
         )
 
@@ -1251,11 +1212,8 @@ class FileTransferManager:
             //serveur/prod/fm/script/fm_kpi.cmd  (pour les .cmd)
             //serveur/prod/fm1/job/jfm1aa/jfm1aa10.bat  (pour les .bat)
         """
-        # ──── Construction du chemin avec routage ────
-        if sous_dossier:
-            file_relative = f"{dossier_dest}/{sous_dossier}/{nom_job}"
-        else:
-            file_relative = f"{dossier_dest}/{nom_job}"
+
+        file_relative = f"{dossier_dest}/{nom_job}"
 
         source_path = Path(f"//{server}/prod/{nom_chaine}/{file_relative}")
         dest_path = Path(f"//{server}/prod/{nom_chaine}/{file_relative}.{horodatage}")
